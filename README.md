@@ -15,25 +15,41 @@ for hardware-accelerated content too — **games, browsers and video included**.
 
 ---
 
-## Install
+## Build the Windows app
 
 ```powershell
 python -m pip install -r requirements.txt
+.\build_exe.ps1
 ```
 
-Requires Python 3.9+ on Windows 10/11. (`keyboard` is only needed for hotkey mode.)
+Requires Python 3.9+ on Windows 10/11. The build writes the desktop app to
+`dist\Macshot.exe`.
 
 ## Use
 
-The quickest way: double-click **`Capture window.bat`**, then click the window you
-want. The result is saved to `%USERPROFILE%\Pictures\Macshot` and copied to the
-clipboard.
+Double-click **`dist\Macshot.exe`**. Macshot starts as a standard Windows tray app
+without opening a console window.
+
+- Press **Ctrl + Shift + S** to capture a window.
+- Or right-click the tray icon and choose **Capture Window**.
+- Click the target window in the overlay; press **Esc** or right-click to cancel.
+- Results are saved to `%USERPROFILE%\Pictures\Macshot` and copied to the
+  clipboard.
+- Use the tray menu to open the output folder or exit the app.
+
+To start Macshot automatically at login, put a shortcut to `dist\Macshot.exe` in
+your Startup folder (`Win+R` -> `shell:startup`).
+
+## Developer CLI
 
 From a terminal:
 
 ```powershell
-# Pick a window interactively (default) — click it, Esc to cancel
+# Run the tray app
 python -m macshot
+
+# Pick a window interactively once — click it, Esc to cancel
+python -m macshot --pick
 
 # Capture the current foreground window after a 3-second countdown
 python -m macshot --foreground -d 3
@@ -43,16 +59,7 @@ python -m macshot --title "崩坏"
 
 # List every capturable window
 python -m macshot --list
-
-# Run in the background; press Ctrl+Shift+S anytime to grab a window
-python -m macshot --hotkey
 ```
-
-### Background hotkey
-
-Double-click **`Hotkey daemon.bat`** (or run `python -m macshot --hotkey`). Press
-**Ctrl + Shift + S** to pop the window picker. To start it automatically at login,
-put a shortcut to the `.bat` in your Startup folder (`Win+R` → `shell:startup`).
 
 ## Output options
 
@@ -99,11 +106,14 @@ python -m macshot --shadow-blur 45 --shadow-opacity 0.35 --padding 110
 
 ```
 macshot/
+  app.py        Windows tray app, hotkey loop, shared capture workflow
   effect.py     the macOS look: rounded corners + shadow + transparency
   capture.py    window enumeration, DWM bounds, screen-region BitBlt
   picker.py     the fullscreen "click a window" overlay
   clipboard.py  copy a transparent image to the clipboard
-  __main__.py   command-line interface
+  __main__.py   app entry point plus developer CLI
+macshot_launcher.py  PyInstaller launcher
+build_exe.ps1        builds dist/Macshot.exe
 tests/
   demo_effect.py   renders the effect on a synthetic window (no capture)
   check_alpha.py   asserts transparency + that all modules import

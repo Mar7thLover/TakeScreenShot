@@ -1,3 +1,4 @@
 pywin32>=306
 Pillow>=10.0
-keyboard>=0.13.5   ; required only for --hotkey mode
+pystray>=0.19.5
+pyinstaller>=6.0

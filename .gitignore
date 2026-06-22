@@ -4,5 +4,6 @@ tests/out/
 tests/*.png
 build/
 dist/
+*.spec
 *.egg-info/
 .venv/
