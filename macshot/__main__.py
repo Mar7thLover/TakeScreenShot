@@ -23,6 +23,7 @@ from . import __version__
 from .app import (
     capture_selected_window,
     config_from_args,
+    load_config,
     process_hwnd,
     run_tray_app,
 )
@@ -44,7 +45,7 @@ def cmd_list(_args) -> int:
 
 
 def cmd_pick(args) -> int:
-    config = config_from_args(args)
+    config = config_from_args(args, load_config())
     print("[macshot] click the window you want to capture (Esc to cancel)...")
     path = capture_selected_window(config)
     if not path:
@@ -57,7 +58,7 @@ def cmd_pick(args) -> int:
 def cmd_foreground(args) -> int:
     import win32gui
 
-    config = config_from_args(args)
+    config = config_from_args(args, load_config())
     for remaining in range(args.delay, 0, -1):
         print(f"[macshot] capturing foreground window in {remaining}s...", end="\r")
         time.sleep(1)
@@ -74,7 +75,7 @@ def cmd_foreground(args) -> int:
 
 
 def cmd_title(args) -> int:
-    config = config_from_args(args)
+    config = config_from_args(args, load_config())
     hwnd = find_window_by_title(args.title)
     if not hwnd:
         print(f"[macshot] no window matching: {args.title!r}")
@@ -85,7 +86,7 @@ def cmd_title(args) -> int:
 
 
 def cmd_hotkey(args) -> int:
-    return run_tray_app(config_from_args(args))
+    return run_tray_app(config_from_args(args, load_config()))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -111,24 +112,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     p.add_argument("-d", "--delay", type=int, default=0,
                    help="countdown seconds before --foreground capture")
-    p.add_argument("--combo", default="ctrl+shift+s",
+    p.add_argument("--combo", default=None,
                    help="hotkey for --hotkey mode (default: ctrl+shift+s)")
-    p.add_argument("--settle", type=float, default=0.35,
+    p.add_argument("--settle", type=float, default=None,
                    help="seconds to wait after raising a window before capture")
-    p.add_argument("--no-raise", action="store_true",
+    p.add_argument("--no-raise", action="store_true", default=None,
                    help="do not bring the target window to the front")
 
     p.add_argument("-o", "--out", metavar="DIR",
                    help="output directory (default: ~/Pictures/Macshot)")
-    p.add_argument("--open", action="store_true",
+    p.add_argument("--open", action="store_true", default=None,
                    help="open the output folder afterwards")
-    p.add_argument("--no-clipboard", action="store_true",
+    p.add_argument("--no-clipboard", action="store_true", default=None,
                    help="do not copy the result to the clipboard")
 
     # Style overrides.
     p.add_argument("--radius", type=int, help="corner radius (px @100%%, default 11)")
     p.add_argument("--padding", type=int, help="transparent margin (px, default 90)")
-    p.add_argument("--no-shadow", action="store_true", help="disable the drop shadow")
+    p.add_argument("--no-shadow", action="store_true", default=None,
+                   help="disable the drop shadow")
     p.add_argument("--shadow-opacity", type=float, help="shadow opacity 0..1 (default 0.45)")
     p.add_argument("--shadow-blur", type=int, help="shadow blur radius (default 34)")
     p.add_argument("--shadow-offset", type=int, help="shadow vertical offset (default 22)")
@@ -154,7 +156,7 @@ def main(argv=None) -> int:
             return cmd_title(args)
         if args.hotkey or args.tray:
             return cmd_hotkey(args)
-        return run_tray_app(config_from_args(args))
+        return run_tray_app(config_from_args(args, load_config()))
     except KeyboardInterrupt:
         print("\n[macshot] interrupted.")
         return 130

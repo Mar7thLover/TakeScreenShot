@@ -5,20 +5,26 @@ from __future__ import annotations
 import ctypes
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 from datetime import datetime
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from .capture import bring_to_front, capture_window
+from .capture import bring_to_front, capture_full_screen, capture_region, capture_window
 from .clipboard import copy_image
-from .effect import ShotStyle, apply_mac_effect
+from .effect import ShotStyle, apply_circle_effect, apply_mac_effect, apply_region_effect
+from .settings import load_settings, save_settings
 
 WM_HOTKEY = 0x0312
 WM_APP_CAPTURE = 0x8001
 WM_APP_OPEN_DIR = 0x8002
 WM_APP_EXIT = 0x8003
+WM_APP_HOME = 0x8004
+WM_APP_SETTINGS = 0x8005
+WM_APP_CAPTURE_FULL = 0x8006
+WM_APP_CAPTURE_CIRCLE = 0x8007
+WM_APP_CAPTURE_FREE = 0x8008
 HOTKEY_ID = 1
 ERROR_ALREADY_EXISTS = 183
 ERROR_HOTKEY_ALREADY_REGISTERED = 1409
@@ -65,6 +71,41 @@ def default_out_dir() -> Path:
     return Path(os.path.expanduser("~")) / "Pictures" / "Macshot"
 
 
+def load_config() -> AppConfig:
+    """Load persisted desktop settings into an AppConfig instance."""
+    config = AppConfig()
+    data = load_settings()
+    valid_fields = {field.name for field in fields(AppConfig)}
+    updates = {}
+    for key, value in data.items():
+        if key not in valid_fields:
+            continue
+        if key == "out":
+            updates[key] = Path(value) if value else None
+        else:
+            updates[key] = value
+    return replace(config, **updates)
+
+
+def save_config(config: AppConfig) -> None:
+    """Persist settings edited from the desktop UI."""
+    values = {
+        "out": str(config.out) if config.out else None,
+        "open_after": config.open_after,
+        "no_clipboard": config.no_clipboard,
+        "no_raise": config.no_raise,
+        "settle": config.settle,
+        "hotkey": config.hotkey,
+        "radius": config.radius,
+        "padding": config.padding,
+        "no_shadow": config.no_shadow,
+        "shadow_opacity": config.shadow_opacity,
+        "shadow_blur": config.shadow_blur,
+        "shadow_offset": config.shadow_offset,
+    }
+    save_settings(values)
+
+
 def style_from_config(config: AppConfig) -> ShotStyle:
     st = ShotStyle()
     if config.radius is not None:
@@ -82,20 +123,33 @@ def style_from_config(config: AppConfig) -> ShotStyle:
     return st
 
 
-def config_from_args(args) -> AppConfig:
+def config_from_args(args, base: AppConfig | None = None) -> AppConfig:
+    config = base or AppConfig()
     return AppConfig(
-        out=Path(args.out) if args.out else None,
-        open_after=args.open,
-        no_clipboard=args.no_clipboard,
-        no_raise=args.no_raise,
-        settle=args.settle,
-        hotkey=args.combo,
-        radius=args.radius,
-        padding=args.padding,
-        no_shadow=args.no_shadow,
-        shadow_opacity=args.shadow_opacity,
-        shadow_blur=args.shadow_blur,
-        shadow_offset=args.shadow_offset,
+        out=Path(args.out) if args.out else config.out,
+        open_after=args.open if args.open is not None else config.open_after,
+        no_clipboard=(
+            args.no_clipboard if args.no_clipboard is not None else config.no_clipboard
+        ),
+        no_raise=args.no_raise if args.no_raise is not None else config.no_raise,
+        settle=args.settle if args.settle is not None else config.settle,
+        hotkey=args.combo or config.hotkey,
+        radius=args.radius if args.radius is not None else config.radius,
+        padding=args.padding if args.padding is not None else config.padding,
+        no_shadow=args.no_shadow if args.no_shadow is not None else config.no_shadow,
+        shadow_opacity=(
+            args.shadow_opacity
+            if args.shadow_opacity is not None
+            else config.shadow_opacity
+        ),
+        shadow_blur=(
+            args.shadow_blur if args.shadow_blur is not None else config.shadow_blur
+        ),
+        shadow_offset=(
+            args.shadow_offset
+            if args.shadow_offset is not None
+            else config.shadow_offset
+        ),
     )
 
 
@@ -135,6 +189,33 @@ def capture_selected_window(config: AppConfig) -> Path | None:
     if not hwnd:
         return None
     return process_hwnd(hwnd, config)
+
+
+def capture_full_screen_once(config: AppConfig) -> Path:
+    img, _scale = capture_full_screen()
+    return save_and_finish(img.convert("RGBA"), config, "full-screen")
+
+
+def capture_free_region_once(config: AppConfig) -> Path | None:
+    from .picker import pick_region
+
+    region = pick_region("free")
+    if not region:
+        return None
+    img, scale = capture_region(region)
+    result = apply_region_effect(img, style_from_config(config), scale=scale)
+    return save_and_finish(result, config, "free-region")
+
+
+def capture_circle_region_once(config: AppConfig) -> Path | None:
+    from .picker import pick_region
+
+    region = pick_region("circle")
+    if not region:
+        return None
+    img, scale = capture_region(region)
+    result = apply_circle_effect(img, style_from_config(config), scale=scale)
+    return save_and_finish(result, config, "circle-region")
 
 
 def open_output_dir(config: AppConfig) -> None:
@@ -226,12 +307,13 @@ def _parse_hotkey(combo: str) -> tuple[int, int]:
 
 class MacshotTrayApp:
     def __init__(self, config: AppConfig | None = None):
-        self.config = config or AppConfig()
+        self.config = config or load_config()
         self._thread_id = 0
         self._icon = None
         self._capturing = False
         self._hotkey_registered = False
         self._mutex_handle = None
+        self._last_path: Path | None = None
 
     def run(self) -> int:
         self._thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
@@ -245,6 +327,10 @@ class MacshotTrayApp:
             self._start_tray()
             self._hotkey_registered = self._register_hotkey()
             _show_startup_feedback(self.config, self._hotkey_registered)
+            # Open the Home window automatically on launch. Posting the message
+            # lets the regular message loop own the Tk window instead of blocking
+            # startup here.
+            self._post(WM_APP_HOME)
             self._message_loop()
         except Exception as exc:
             _show_message("Macshot", str(exc), error=True)
@@ -256,17 +342,76 @@ class MacshotTrayApp:
         return 0
 
     def capture_once(self) -> None:
+        self.capture_window_once()
+
+    def capture_window_once(self) -> None:
         if self._capturing:
             return
         self._capturing = True
         try:
             path = capture_selected_window(self.config)
-            if path and self._icon:
-                _notify(self._icon, f"Saved to {path}")
+            self._capture_done(path)
         except Exception as exc:
             _show_message("Macshot capture failed", str(exc), error=True)
         finally:
             self._capturing = False
+
+    def capture_full_screen_once(self) -> None:
+        self._run_capture(lambda: capture_full_screen_once(self.config))
+
+    def capture_circle_once(self) -> None:
+        self._run_capture(lambda: capture_circle_region_once(self.config))
+
+    def capture_free_once(self) -> None:
+        self._run_capture(lambda: capture_free_region_once(self.config))
+
+    def open_home(self) -> None:
+        from .ui import show_home
+
+        show_home(
+            self.config,
+            on_capture_window=self.capture_window_once,
+            on_capture_full=self.capture_full_screen_once,
+            on_capture_circle=self.capture_circle_once,
+            on_capture_free=self.capture_free_once,
+            on_settings=self.open_settings,
+            on_open_folder=lambda: open_output_dir(self.config),
+            last_path=self._last_path,
+        )
+
+    def open_settings(self) -> None:
+        from .ui import show_settings
+
+        updated = show_settings(self.config, default_out_dir())
+        if updated is None:
+            return
+        old_hotkey = self.config.hotkey
+        self.config = updated
+        save_config(self.config)
+        if self._icon:
+            self._icon.title = f"Macshot - {self.config.hotkey} to capture"
+        if old_hotkey != self.config.hotkey:
+            self._unregister_hotkey()
+            self._hotkey_registered = self._register_hotkey()
+
+    def _run_capture(self, capture_func) -> None:
+        if self._capturing:
+            return
+        self._capturing = True
+        try:
+            path = capture_func()
+            self._capture_done(path)
+        except Exception as exc:
+            _show_message("Macshot capture failed", str(exc), error=True)
+        finally:
+            self._capturing = False
+
+    def _capture_done(self, path: Path | None) -> None:
+        if not path:
+            return
+        self._last_path = path
+        if self._icon:
+            _notify(self._icon, f"Saved to {path}")
 
     def _start_tray(self) -> None:
         try:
@@ -277,9 +422,26 @@ class MacshotTrayApp:
             ) from exc
 
         menu = pystray.Menu(
+            pystray.MenuItem("Home", lambda _icon, _item: self._post(WM_APP_HOME)),
             pystray.MenuItem(
                 "Capture Window",
                 lambda _icon, _item: self._post(WM_APP_CAPTURE),
+            ),
+            pystray.MenuItem(
+                "Capture Full Screen",
+                lambda _icon, _item: self._post(WM_APP_CAPTURE_FULL),
+            ),
+            pystray.MenuItem(
+                "Capture Circle",
+                lambda _icon, _item: self._post(WM_APP_CAPTURE_CIRCLE),
+            ),
+            pystray.MenuItem(
+                "Free Screenshot",
+                lambda _icon, _item: self._post(WM_APP_CAPTURE_FREE),
+            ),
+            pystray.MenuItem(
+                "Settings",
+                lambda _icon, _item: self._post(WM_APP_SETTINGS),
             ),
             pystray.MenuItem(
                 "Open Output Folder",
@@ -323,7 +485,14 @@ class MacshotTrayApp:
             self._mutex_handle = None
 
     def _register_hotkey(self) -> bool:
-        modifiers, key = _parse_hotkey(self.config.hotkey)
+        try:
+            modifiers, key = _parse_hotkey(self.config.hotkey)
+        except ValueError as exc:
+            _show_message(
+                "Macshot hotkey unavailable",
+                f"Could not register hotkey: {self.config.hotkey}\n\n{exc}",
+            )
+            return False
         ctypes.windll.kernel32.SetLastError(0)
         ok = ctypes.windll.user32.RegisterHotKey(None, HOTKEY_ID, modifiers, key)
         if not ok:
@@ -345,6 +514,7 @@ class MacshotTrayApp:
     def _unregister_hotkey(self) -> None:
         if self._hotkey_registered:
             ctypes.windll.user32.UnregisterHotKey(None, HOTKEY_ID)
+            self._hotkey_registered = False
 
     def _message_loop(self) -> None:
         msg = MSG()
@@ -356,9 +526,25 @@ class MacshotTrayApp:
             if result == -1:
                 raise RuntimeError("Windows message loop failed")
             if msg.message == WM_HOTKEY and msg.wParam == HOTKEY_ID:
-                self.capture_once()
+                self.capture_window_once()
             elif msg.message == WM_APP_CAPTURE:
-                self.capture_once()
+                self.capture_window_once()
+            elif msg.message == WM_APP_CAPTURE_FULL:
+                self.capture_full_screen_once()
+            elif msg.message == WM_APP_CAPTURE_CIRCLE:
+                self.capture_circle_once()
+            elif msg.message == WM_APP_CAPTURE_FREE:
+                self.capture_free_once()
+            elif msg.message == WM_APP_HOME:
+                try:
+                    self.open_home()
+                except Exception as exc:
+                    _show_message("Macshot", str(exc), error=True)
+            elif msg.message == WM_APP_SETTINGS:
+                try:
+                    self.open_settings()
+                except Exception as exc:
+                    _show_message("Macshot", str(exc), error=True)
             elif msg.message == WM_APP_OPEN_DIR:
                 try:
                     open_output_dir(self.config)

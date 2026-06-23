@@ -11,6 +11,8 @@ import macshot.capture
 import macshot.clipboard
 import macshot.effect
 import macshot.picker  # noqa: F401  (imports tkinter lazily inside functions)
+import macshot.settings
+import macshot.ui
 
 from PIL import Image
 

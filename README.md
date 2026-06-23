@@ -1,6 +1,6 @@
 # macshot — macOS-style window screenshots for Windows
 
-Capture any window the way macOS does with **Cmd + Shift + 4 + Space**:
+Capture windows and screen regions with a macOS-inspired style:
 
 - **Original window size** — pixel-perfect, no resizing.
 - **Rounded corners** — anti-aliased, like a real macOS window.
@@ -31,10 +31,17 @@ Double-click **`dist\Macshot.exe`**. Macshot starts as a standard Windows tray a
 without opening a console window.
 
 - Press **Ctrl + Shift + S** to capture a window.
-- Or right-click the tray icon and choose **Capture Window**.
-- Click the target window in the overlay; press **Esc** or right-click to cancel.
+- Right-click the tray icon and choose **Home** to open the desktop home window.
+- Or use the tray menu directly:
+  - **Capture Window**: click a highlighted window in the overlay.
+  - **Capture Full Screen**: capture the full virtual desktop.
+  - **Capture Circle**: drag a circle and keep only the pixels inside it.
+  - **Free Screenshot**: drag a rectangular region.
+- In any overlay, press **Esc** or right-click to cancel.
 - Results are saved to `%USERPROFILE%\Pictures\Macshot` and copied to the
   clipboard.
+- Use **Settings** from the tray or home window to change output, clipboard,
+  hotkey and style options. Settings are saved under your Windows app data folder.
 - Use the tray menu to open the output folder or exit the app.
 
 To start Macshot automatically at login, put a shortcut to `dist\Macshot.exe` in
@@ -105,18 +112,10 @@ python -m macshot --shadow-blur 45 --shadow-opacity 0.35 --padding 110
 ## Project layout
 
 ```
-macshot/
-  app.py        Windows tray app, hotkey loop, shared capture workflow
-  effect.py     the macOS look: rounded corners + shadow + transparency
-  capture.py    window enumeration, DWM bounds, screen-region BitBlt
-  picker.py     the fullscreen "click a window" overlay
-  clipboard.py  copy a transparent image to the clipboard
-  __main__.py   app entry point plus developer CLI
-macshot_launcher.py  PyInstaller launcher
-build_exe.ps1        builds dist/Macshot.exe
-tests/
-  demo_effect.py   renders the effect on a synthetic window (no capture)
-  check_alpha.py   asserts transparency + that all modules import
+macshot/         app source
+tests/           lightweight effect checks
+build_exe.ps1    builds dist/Macshot.exe
+requirements.txt dependencies
 ```
 
 ## Notes & limits
@@ -125,5 +124,9 @@ tests/
   the rounded mask trims that away (plus a 1px edge `trim`) so no desktop seam
   leaks in.
 - Capturing brings the target window to the front first (skip with `--no-raise`).
-- For multi-monitor mixed-DPI setups, capture uses each window's own DPI; the
-  picker overlay highlight may be a pixel or two off on the secondary monitor.
+- Full screen and region modes also use physical screen pixels. Free and circle
+  region captures disable the window-only 1px edge trim so the selected source
+  pixels are preserved exactly.
+- For multi-monitor mixed-DPI setups, window capture uses each window's own DPI;
+  region capture uses the selected region's center monitor for styling scale. The
+  picker overlay highlight may be a pixel or two off on a secondary monitor.

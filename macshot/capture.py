@@ -43,6 +43,25 @@ def get_dpi_scale(hwnd: int) -> float:
     return 1.0
 
 
+def get_dpi_scale_for_point(x: int, y: int) -> float:
+    """Return the DPI scale factor for the monitor nearest a physical point."""
+    try:
+        monitor = win32api.MonitorFromPoint((x, y), win32con.MONITOR_DEFAULTTONEAREST)
+        dpi_x = ctypes.c_uint(96)
+        dpi_y = ctypes.c_uint(96)
+        res = ctypes.windll.shcore.GetDpiForMonitor(
+            ctypes.c_void_p(int(monitor)),
+            0,  # MDT_EFFECTIVE_DPI
+            ctypes.byref(dpi_x),
+            ctypes.byref(dpi_y),
+        )
+        if res == 0 and dpi_x.value:
+            return dpi_x.value / 96.0
+    except Exception:
+        pass
+    return 1.0
+
+
 def get_frame_bounds(hwnd: int) -> tuple[int, int, int, int]:
     """Visible bounds (left, top, right, bottom) in physical screen pixels."""
     rect = wintypes.RECT()
@@ -188,6 +207,29 @@ def grab_region(left: int, top: int, right: int, bottom: int) -> Image.Image:
         src_dc.DeleteDC()
         win32gui.ReleaseDC(hwnd_desktop, screen_dc)
     return img
+
+
+def virtual_screen_bounds() -> tuple[int, int, int, int]:
+    """Bounds of the full virtual desktop in physical pixels."""
+    left = win32api.GetSystemMetrics(76)  # SM_XVIRTUALSCREEN
+    top = win32api.GetSystemMetrics(77)  # SM_YVIRTUALSCREEN
+    width = win32api.GetSystemMetrics(78)  # SM_CXVIRTUALSCREEN
+    height = win32api.GetSystemMetrics(79)  # SM_CYVIRTUALSCREEN
+    return left, top, left + width, top + height
+
+
+def capture_full_screen() -> tuple[Image.Image, float]:
+    """Capture the full virtual desktop without resizing."""
+    l, t, r, b = virtual_screen_bounds()
+    return grab_region(l, t, r, b), 1.0
+
+
+def capture_region(region: tuple[int, int, int, int]) -> tuple[Image.Image, float]:
+    """Capture a physical screen rectangle and return a DPI scale for styling."""
+    l, t, r, b = region
+    cx = l + (r - l) // 2
+    cy = t + (b - t) // 2
+    return grab_region(l, t, r, b), get_dpi_scale_for_point(cx, cy)
 
 
 def capture_window(hwnd: int) -> tuple[Image.Image, float]:

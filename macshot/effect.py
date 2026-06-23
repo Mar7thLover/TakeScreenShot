@@ -7,7 +7,7 @@ corners, sits on a fully transparent background, and casts a soft downward shado
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from PIL import Image, ImageDraw, ImageFilter
 
@@ -57,6 +57,18 @@ def _rounded_mask(size: tuple[int, int], radius: int, supersample: int = 4) -> I
     return big.resize(size, Image.LANCZOS)
 
 
+def _ellipse_mask(size: tuple[int, int], supersample: int = 4) -> Image.Image:
+    """Anti-aliased ellipse alpha mask (L mode)."""
+    w, h = size
+    big = Image.new("L", (w * supersample, h * supersample), 0)
+    draw = ImageDraw.Draw(big)
+    draw.ellipse(
+        [0, 0, w * supersample - 1, h * supersample - 1],
+        fill=255,
+    )
+    return big.resize(size, Image.LANCZOS)
+
+
 def apply_mac_effect(img: Image.Image, style: ShotStyle, scale: float = 1.0) -> Image.Image:
     """Return an RGBA image of the window with rounded corners, drop shadow and a
     transparent background. The window pixels keep their original resolution."""
@@ -99,4 +111,43 @@ def apply_mac_effect(img: Image.Image, style: ShotStyle, scale: float = 1.0) -> 
 
     # 4) Drop the window on top of the shadow.
     canvas.alpha_composite(rounded, (st.padding, st.padding))
+    return canvas
+
+
+def apply_region_effect(img: Image.Image, style: ShotStyle, scale: float = 1.0) -> Image.Image:
+    """Apply the shared Macshot look to a freeform rectangular screen region.
+
+    Region captures must keep every selected source pixel, so the window-specific
+    1px edge trim is disabled here.
+    """
+    return apply_mac_effect(img, replace(style, trim=0), scale=scale)
+
+
+def apply_circle_effect(img: Image.Image, style: ShotStyle, scale: float = 1.0) -> Image.Image:
+    """Return an RGBA circular crop with the same transparent shadow style."""
+    st = replace(style, trim=0).scaled(scale)
+    img = img.convert("RGBA")
+    w, h = img.size
+
+    mask = _ellipse_mask((w, h))
+    clipped = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    clipped.paste(img, (0, 0), mask)
+
+    cw, ch = w + st.padding * 2, h + st.padding * 2
+    canvas = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+
+    if st.shadow and st.shadow_opacity > 0:
+        shadow = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+        sdraw = ImageDraw.Draw(shadow)
+        g = st.shadow_grow
+        sx0 = st.padding + st.shadow_dx - g
+        sy0 = st.padding + st.shadow_dy - g
+        sx1 = st.padding + st.shadow_dx + w + g
+        sy1 = st.padding + st.shadow_dy + h + g
+        alpha = max(0, min(255, round(255 * st.shadow_opacity)))
+        sdraw.ellipse([sx0, sy0, sx1, sy1], fill=(0, 0, 0, alpha))
+        shadow = shadow.filter(ImageFilter.GaussianBlur(st.shadow_blur))
+        canvas = Image.alpha_composite(canvas, shadow)
+
+    canvas.alpha_composite(clipped, (st.padding, st.padding))
     return canvas

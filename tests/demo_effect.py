@@ -5,7 +5,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PIL import Image, ImageDraw
-from macshot.effect import ShotStyle, apply_mac_effect
+from macshot.effect import (
+    ShotStyle,
+    apply_circle_effect,
+    apply_mac_effect,
+    apply_region_effect,
+)
 
 w, h = 800, 520
 img = Image.new("RGB", (w, h), (40, 44, 60))
@@ -22,14 +27,25 @@ out_path = Path(__file__).resolve().parent / "demo_effect.png"
 out.save(out_path)
 
 trim = ShotStyle().trim                                  # 1px cropped per edge
+padding = ShotStyle().padding
 assert out.mode == "RGBA"
-assert out.size == (w - 2 * trim + 180, h - 2 * trim + 180), out.size   # padding 90/side
+assert out.size == (w - 2 * trim + 180, h - 2 * trim + 180), out.size
 assert out.getpixel((0, 0))[3] == 0                      # outer corner transparent
 cx, cy = out.size[0] // 2, out.size[1] // 2
 assert out.getpixel((cx, cy))[3] == 255                  # window center opaque
 # Shadow region below the window should be semi-transparent (not 0, not 255).
 sa = out.getpixel((cx, cy + (h - 2 * trim) // 2 + 30))[3]
 assert 0 < sa < 255, sa
+
+region = apply_region_effect(img, ShotStyle(), scale=1.0)
+assert region.size == (w + padding * 2, h + padding * 2), region.size
+assert region.getpixel((padding + 2, padding + 2))[3] > 0
+assert region.getpixel((region.size[0] // 2, region.size[1] // 2))[3] == 255
+
+circle = apply_circle_effect(img, ShotStyle(), scale=1.0)
+assert circle.size == (w + padding * 2, h + padding * 2), circle.size
+assert circle.getpixel((padding, padding))[3] == 0
+assert circle.getpixel((circle.size[0] // 2, circle.size[1] // 2))[3] == 255
 
 print("OK  size:", out.size, " saved:", out_path)
 print("    center alpha:", out.getpixel((cx, cy))[3], " shadow alpha:", sa)
