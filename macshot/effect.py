@@ -69,6 +69,22 @@ def _ellipse_mask(size: tuple[int, int], supersample: int = 4) -> Image.Image:
     return big.resize(size, Image.LANCZOS)
 
 
+def _freeform_mask(
+    size: tuple[int, int],
+    points: list[tuple[int, int]],
+    supersample: int = 4,
+) -> Image.Image:
+    """Anti-aliased mask for a closed hand-drawn polygon."""
+    w, h = size
+    if len(points) < 3:
+        return Image.new("L", size, 0)
+    big = Image.new("L", (w * supersample, h * supersample), 0)
+    scaled = [(x * supersample, y * supersample) for x, y in points]
+    draw = ImageDraw.Draw(big)
+    draw.polygon(scaled, fill=255)
+    return big.resize(size, Image.LANCZOS)
+
+
 def apply_mac_effect(img: Image.Image, style: ShotStyle, scale: float = 1.0) -> Image.Image:
     """Return an RGBA image of the window with rounded corners, drop shadow and a
     transparent background. The window pixels keep their original resolution."""
@@ -147,6 +163,37 @@ def apply_circle_effect(img: Image.Image, style: ShotStyle, scale: float = 1.0) 
         alpha = max(0, min(255, round(255 * st.shadow_opacity)))
         sdraw.ellipse([sx0, sy0, sx1, sy1], fill=(0, 0, 0, alpha))
         shadow = shadow.filter(ImageFilter.GaussianBlur(st.shadow_blur))
+        canvas = Image.alpha_composite(canvas, shadow)
+
+    canvas.alpha_composite(clipped, (st.padding, st.padding))
+    return canvas
+
+
+def apply_freeform_effect(
+    img: Image.Image,
+    points: list[tuple[int, int]],
+    style: ShotStyle,
+    scale: float = 1.0,
+) -> Image.Image:
+    """Return an RGBA crop clipped to a freehand shape with a matching shadow."""
+    st = replace(style, trim=0).scaled(scale)
+    img = img.convert("RGBA")
+    w, h = img.size
+
+    mask = _freeform_mask((w, h), points)
+    clipped = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    clipped.paste(img, (0, 0), mask)
+
+    cw, ch = w + st.padding * 2, h + st.padding * 2
+    canvas = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+
+    if st.shadow and st.shadow_opacity > 0:
+        alpha = max(0, min(255, round(255 * st.shadow_opacity)))
+        shadow_mask = Image.new("L", (cw, ch), 0)
+        shadow_mask.paste(mask, (st.padding + st.shadow_dx, st.padding + st.shadow_dy))
+        shadow_mask = shadow_mask.filter(ImageFilter.GaussianBlur(st.shadow_blur))
+        shadow = Image.new("RGBA", (cw, ch), (0, 0, 0, alpha))
+        shadow.putalpha(shadow_mask.point(lambda value: round(value * alpha / 255)))
         canvas = Image.alpha_composite(canvas, shadow)
 
     canvas.alpha_composite(clipped, (st.padding, st.padding))

@@ -8,6 +8,7 @@ from PIL import Image, ImageDraw
 from macshot.effect import (
     ShotStyle,
     apply_circle_effect,
+    apply_freeform_effect,
     apply_mac_effect,
     apply_region_effect,
 )
@@ -46,6 +47,16 @@ circle = apply_circle_effect(img, ShotStyle(), scale=1.0)
 assert circle.size == (w + padding * 2, h + padding * 2), circle.size
 assert circle.getpixel((padding, padding))[3] == 0
 assert circle.getpixel((circle.size[0] // 2, circle.size[1] // 2))[3] == 255
+
+freeform = apply_freeform_effect(
+    img,
+    [(80, 20), (720, 90), (650, 460), (120, 500), (40, 240)],
+    ShotStyle(),
+    scale=1.0,
+)
+assert freeform.size == (w + padding * 2, h + padding * 2), freeform.size
+assert freeform.getpixel((padding, padding))[3] == 0
+assert freeform.getpixel((freeform.size[0] // 2, freeform.size[1] // 2))[3] == 255
 
 print("OK  size:", out.size, " saved:", out_path)
 print("    center alpha:", out.getpixel((cx, cy))[3], " shadow alpha:", sa)

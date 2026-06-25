@@ -27,6 +27,54 @@ _MUTED = "#6b7280"
 _ACCENT = "#2f6fed"
 _ACCENT_ACTIVE = "#2056c7"
 _NOTIFY_BG = "#1f2330"
+_INPUT_BG = "#ffffff"
+_INPUT_BORDER = "#d7dbe2"
+_HOVER = "#e1e6ee"
+_FONT = "Microsoft YaHei UI"
+
+
+def _font(size: int, weight: str | None = None):
+    return (_FONT, size, weight) if weight else (_FONT, size)
+
+
+def _hover(widget, normal: str, hover: str) -> None:
+    """Lightweight hover feedback for flat tk.Buttons."""
+    widget.bind("<Enter>", lambda _e: widget.configure(bg=hover), add="+")
+    widget.bind("<Leave>", lambda _e: widget.configure(bg=normal), add="+")
+
+
+def _style_combobox(widget) -> None:
+    """Theme ttk Comboboxes so they match the flat card inputs.
+
+    The default Windows ttk theme ignores fieldbackground/bordercolor, so we
+    switch to the fully styleable ``clam`` theme (only Comboboxes use ttk here).
+    """
+    from tkinter import ttk
+
+    style = ttk.Style(widget)
+    try:
+        style.theme_use("clam")
+    except Exception:
+        pass
+    style.configure(
+        "Macshot.TCombobox",
+        fieldbackground=_INPUT_BG,
+        background=_INPUT_BG,
+        foreground=_TEXT,
+        bordercolor=_INPUT_BORDER,
+        lightcolor=_INPUT_BORDER,
+        darkcolor=_INPUT_BORDER,
+        arrowcolor=_MUTED,
+        relief="flat",
+        padding=6,
+    )
+    style.map(
+        "Macshot.TCombobox",
+        fieldbackground=[("readonly", _INPUT_BG)],
+        bordercolor=[("focus", _ACCENT), ("hover", _ACCENT)],
+        lightcolor=[("focus", _ACCENT)],
+        darkcolor=[("focus", _ACCENT)],
+    )
 
 
 @dataclass
@@ -52,22 +100,26 @@ def _center(win, width: int, height: int) -> None:
 def _button(parent, text: str, command, primary: bool = False, width: int | None = None):
     import tkinter as tk
 
-    return tk.Button(
+    normal = _ACCENT if primary else "#eef1f6"
+    hover = _ACCENT_ACTIVE if primary else _HOVER
+    btn = tk.Button(
         parent,
         text=text,
         command=command,
-        bg=_ACCENT if primary else "#eef1f6",
+        bg=normal,
         fg="white" if primary else _TEXT,
-        activebackground=_ACCENT_ACTIVE if primary else "#e1e6ee",
+        activebackground=hover,
         activeforeground="white" if primary else _TEXT,
         relief="flat",
         bd=0,
         padx=14,
         pady=9,
         width=width,
-        font=("Segoe UI", 10, "bold"),
+        font=_font(10, "bold"),
         cursor="hand2",
     )
+    _hover(btn, normal, hover)
+    return btn
 
 
 def _link_button(parent, text: str, command):
@@ -85,7 +137,7 @@ def _link_button(parent, text: str, command):
         bd=0,
         padx=4,
         pady=6,
-        font=("Segoe UI", 10, "bold"),
+        font=_font(10, "bold"),
         cursor="hand2",
     )
 
@@ -110,7 +162,7 @@ def _section_title(parent, text: str):
         text=text,
         bg=_BG,
         fg=_MUTED,
-        font=("Segoe UI", 9, "bold"),
+        font=_font(9, "bold"),
     )
 
 
@@ -138,19 +190,28 @@ def build_home(root, config, callbacks: HomeCallbacks, last_path, on_destroy):
 
     top.protocol("WM_DELETE_WINDOW", handle_close)
 
-    shell = tk.Frame(top, bg=_BG, padx=24, pady=22)
+    shell = tk.Frame(top, bg=_BG, padx=24, pady=20)
     shell.pack(fill="both", expand=True)
 
+    header = tk.Frame(shell, bg=_BG)
+    header.pack(fill="x")
+    title_block = tk.Frame(header, bg=_BG)
+    title_block.pack(side="left", fill="x", expand=True)
     tk.Label(
-        shell, text="Macshot", bg=_BG, fg=_TEXT, font=("Segoe UI", 21, "bold")
+        title_block, text="Macshot", bg=_BG, fg=_TEXT, font=_font(21, "bold")
     ).pack(anchor="w")
     tk.Label(
-        shell, text=t("home.subtitle"), bg=_BG, fg=_MUTED, font=("Segoe UI", 10)
+        title_block, text=t("home.subtitle"), bg=_BG, fg=_MUTED, font=_font(10)
     ).pack(anchor="w", pady=(2, 0))
+    header_actions = tk.Frame(header, bg=_BG)
+    header_actions.pack(side="right", anchor="n", pady=(2, 0))
+    _button(header_actions, t("home.settings"), callbacks.on_settings).pack(
+        side="left"
+    )
 
     info = _card(shell)
-    info.pack(fill="x", pady=(18, 16))
-    info_inner = tk.Frame(info, bg=_CARD, padx=16, pady=14)
+    info.pack(fill="x", pady=(16, 14))
+    info_inner = tk.Frame(info, bg=_CARD, padx=16, pady=12)
     info_inner.pack(fill="x")
 
     hotkey_label = tk.Label(
@@ -158,7 +219,7 @@ def build_home(root, config, callbacks: HomeCallbacks, last_path, on_destroy):
         text=t("home.hotkey", hotkey=config.hotkey),
         bg=_CARD,
         fg=_TEXT,
-        font=("Segoe UI", 10, "bold"),
+        font=_font(10, "bold"),
         anchor="w",
         justify="left",
     )
@@ -170,8 +231,8 @@ def build_home(root, config, callbacks: HomeCallbacks, last_path, on_destroy):
         text=t("home.output", path=out_dir),
         bg=_CARD,
         fg=_MUTED,
-        font=("Segoe UI", 9),
-        wraplength=420,
+        font=_font(9),
+        wraplength=536,
         justify="left",
         anchor="w",
     ).pack(anchor="w", pady=(6, 0))
@@ -184,8 +245,8 @@ def build_home(root, config, callbacks: HomeCallbacks, last_path, on_destroy):
         textvariable=last_var,
         bg=_CARD,
         fg=_MUTED,
-        font=("Segoe UI", 9),
-        wraplength=420,
+        font=_font(9),
+        wraplength=536,
         justify="left",
         anchor="w",
     ).pack(anchor="w", pady=(4, 0))
@@ -193,32 +254,45 @@ def build_home(root, config, callbacks: HomeCallbacks, last_path, on_destroy):
     _section_title(shell, t("home.capture_section")).pack(anchor="w")
 
     grid = tk.Frame(shell, bg=_BG)
-    grid.pack(fill="x", pady=(8, 4))
+    grid.pack(fill="x", pady=(8, 2))
     grid.columnconfigure(0, weight=1, uniform="cap")
     grid.columnconfigure(1, weight=1, uniform="cap")
 
-    actions = [
+    primary_actions = [
         (t("home.capture_window"), callbacks.on_capture_window, True),
         (t("home.capture_full"), callbacks.on_capture_full, False),
         (t("home.capture_region"), callbacks.on_capture_region, False),
         (t("home.capture_circle"), callbacks.on_capture_circle, False),
-        (t("home.capture_freeform"), callbacks.on_capture_free, False),
     ]
-    for index, (label, callback, primary) in enumerate(actions):
+    for index, (label, callback, primary) in enumerate(primary_actions):
         btn = _button(grid, label, callback, primary=primary)
-        btn.grid(row=index // 2, column=index % 2, sticky="ew", padx=4, pady=4)
+        btn.configure(pady=13)
+        btn.grid(row=index // 2, column=index % 2, sticky="nsew", padx=6, pady=5)
 
-    tk.Frame(shell, bg=_BORDER, height=1).pack(fill="x", pady=(16, 10))
+    advanced = tk.Frame(shell, bg=_BG)
+    advanced.pack(fill="x", pady=(0, 2))
+    _button(
+        advanced,
+        t("home.capture_freeform"),
+        callbacks.on_capture_free,
+    ).pack(fill="x", padx=6, pady=6)
 
     footer = tk.Frame(shell, bg=_BG)
-    footer.pack(fill="x")
-    _link_button(footer, t("home.settings"), callbacks.on_settings).pack(side="left")
+    footer.pack(fill="x", pady=(10, 0))
     _link_button(footer, t("home.open_folder"), callbacks.on_open_folder).pack(
-        side="left", padx=(6, 0)
+        side="left", padx=6
     )
-    _button(footer, t("home.close"), handle_close).pack(side="right")
 
-    _center(top, 460, 470)
+    # Size to the content's natural height so buttons/labels are never clipped
+    # (CJK fonts and DPI scaling make a hardcoded height unreliable).
+    top.update_idletasks()
+    width = 620
+    height = min(top.winfo_reqheight() + 6, top.winfo_screenheight() - 60)
+    sw = top.winfo_screenwidth()
+    sh = top.winfo_screenheight()
+    x = max(0, (sw - width) // 2)
+    y = max(0, (sh - height) // 3)
+    top.geometry(f"{width}x{height}+{x}+{y}")
     top.lift()
     top.attributes("-topmost", True)
     top.after(300, lambda: top.attributes("-topmost", False))
@@ -259,8 +333,11 @@ def build_settings(root, config, default_out_dir: Path, on_save, on_destroy):
     shell.pack(fill="both", expand=True)
 
     tk.Label(
-        shell, text=t("settings.title"), bg=_BG, fg=_TEXT, font=("Segoe UI", 19, "bold")
-    ).pack(anchor="w", pady=(0, 4))
+        shell, text=t("settings.title"), bg=_BG, fg=_TEXT, font=_font(19, "bold")
+    ).pack(anchor="w")
+    tk.Label(
+        shell, text=t("settings.subtitle"), bg=_BG, fg=_MUTED, font=_font(9)
+    ).pack(anchor="w", pady=(2, 0))
 
     out_var = tk.StringVar(value=str(config.out or default_out_dir))
     hotkey_var = tk.StringVar(value=config.hotkey)
@@ -287,11 +364,13 @@ def build_settings(root, config, default_out_dir: Path, on_save, on_destroy):
     raise_var = tk.BooleanVar(value=not config.no_raise)
     shadow_var = tk.BooleanVar(value=not config.no_shadow)
 
+    _style_combobox(top)
+
     def make_section(title: str):
-        _section_title(shell, title).pack(anchor="w", pady=(14, 6))
+        _section_title(shell, title).pack(anchor="w", pady=(16, 6))
         card = _card(shell)
         card.pack(fill="x")
-        inner = tk.Frame(card, bg=_CARD, padx=16, pady=12)
+        inner = tk.Frame(card, bg=_CARD, padx=18, pady=14)
         inner.pack(fill="x")
         inner.columnconfigure(1, weight=1)
         inner._row = 0
@@ -300,35 +379,54 @@ def build_settings(root, config, default_out_dir: Path, on_save, on_destroy):
     def add_field(card, label: str, build_widget, browse=None):
         row = card._row
         tk.Label(
-            card, text=label, bg=_CARD, fg=_TEXT, font=("Segoe UI", 10), anchor="w"
-        ).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=6)
+            card, text=label, bg=_CARD, fg=_TEXT, font=_font(10), anchor="w"
+        ).grid(row=row, column=0, sticky="w", padx=(0, 14), pady=7)
         widget = build_widget(card)
-        widget.grid(row=row, column=1, sticky="ew", pady=6)
+        widget.grid(row=row, column=1, sticky="ew", ipady=3, pady=7)
         if browse:
             _button(card, t("settings.browse"), browse).grid(
-                row=row, column=2, sticky="e", padx=(8, 0), pady=6
+                row=row, column=2, sticky="e", padx=(8, 0), pady=7
             )
         card._row = row + 1
 
     def add_check(card, label: str, var):
         row = card._row
-        tk.Checkbutton(
+        chk = tk.Checkbutton(
             card,
             text=label,
             variable=var,
             bg=_CARD,
             fg=_TEXT,
             activebackground=_CARD,
+            activeforeground=_TEXT,
             selectcolor=_CARD,
             anchor="w",
-            font=("Segoe UI", 10),
-        ).grid(row=row, column=0, columnspan=3, sticky="w", pady=3)
+            font=_font(10),
+            cursor="hand2",
+            highlightthickness=0,
+            bd=0,
+            padx=0,
+        )
+        chk.grid(row=row, column=0, columnspan=3, sticky="w", pady=4)
         card._row = row + 1
 
     def entry(var):
-        return lambda parent: tk.Entry(
-            parent, textvariable=var, relief="solid", bd=1, font=("Segoe UI", 10)
-        )
+        def build(parent):
+            return tk.Entry(
+                parent,
+                textvariable=var,
+                relief="flat",
+                bd=0,
+                bg=_INPUT_BG,
+                fg=_TEXT,
+                insertbackground=_ACCENT,
+                font=_font(10),
+                highlightthickness=1,
+                highlightbackground=_INPUT_BORDER,
+                highlightcolor=_ACCENT,
+            )
+
+        return build
 
     def language_combo(parent):
         return ttk.Combobox(
@@ -336,7 +434,8 @@ def build_settings(root, config, default_out_dir: Path, on_save, on_destroy):
             textvariable=language_var,
             values=language_labels,
             state="readonly",
-            font=("Segoe UI", 10),
+            font=_font(10),
+            style="Macshot.TCombobox",
         )
 
     def browse_out() -> None:
@@ -463,7 +562,7 @@ def build_notification(root, config, path, on_click, duration_ms: int = 6000):
 
     title_label = tk.Label(
         frame, text="Macshot", bg=_NOTIFY_BG, fg="white",
-        font=("Segoe UI", 10, "bold"), anchor="w", cursor="hand2",
+        font=_font(10, "bold"), anchor="w", cursor="hand2",
     )
     title_label.pack(anchor="w")
     message_label = tk.Label(
@@ -471,7 +570,7 @@ def build_notification(root, config, path, on_click, duration_ms: int = 6000):
         text=t("notify.saved_click", path=path),
         bg=_NOTIFY_BG,
         fg="#e8eaed",
-        font=("Segoe UI", 9),
+        font=_font(9),
         justify="left",
         wraplength=320,
         anchor="w",
@@ -503,7 +602,7 @@ def build_notification(root, config, path, on_click, duration_ms: int = 6000):
         bd=0,
         padx=12,
         pady=5,
-        font=("Segoe UI", 9, "bold"),
+        font=_font(9, "bold"),
         cursor="hand2",
     )
     open_btn.pack(anchor="e")

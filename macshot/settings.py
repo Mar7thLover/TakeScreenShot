@@ -17,6 +17,7 @@ _KNOWN_KEYS = {
     "no_raise",
     "settle",
     "hotkey",
+    "language",
     "radius",
     "padding",
     "no_shadow",

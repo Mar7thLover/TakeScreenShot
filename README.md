@@ -28,18 +28,23 @@ Requires Python 3.9+ on Windows 10/11. The build writes the desktop app to
 ## Use
 
 Double-click **`dist\Macshot.exe`**. Macshot starts as a standard Windows tray app
-without opening a console window.
+without opening a console window and shows the Home window immediately.
 
 - Press **Ctrl + Shift + S** to capture a window.
-- Right-click the tray icon and choose **Home** to open the desktop home window.
+- Use **Settings** to switch between automatic language detection, English and
+  Simplified Chinese.
 - Or use the tray menu directly:
   - **Capture Window**: click a highlighted window in the overlay.
   - **Capture Full Screen**: capture the full virtual desktop.
+  - **Capture Region**: drag a rectangular region.
   - **Capture Circle**: drag a circle and keep only the pixels inside it.
-  - **Free Screenshot**: drag a rectangular region.
+  - **Free-form Screenshot**: draw a freehand shape and keep only the pixels
+    inside it.
 - In any overlay, press **Esc** or right-click to cancel.
 - Results are saved to `%USERPROFILE%\Pictures\Macshot` and copied to the
   clipboard.
+- After a screenshot, click the Macshot saved notification to open the output
+  folder.
 - Use **Settings** from the tray or home window to change output, clipboard,
   hotkey and style options. Settings are saved under your Windows app data folder.
 - Use the tray menu to open the output folder or exit the app.
