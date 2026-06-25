@@ -1,8 +1,10 @@
-"""Interactive 'click a window to capture' overlay, like macOS Cmd+Shift+4+Space.
+"""Interactive screen overlays for picking a window, region, or freehand shape.
 
-A faint fullscreen, top-most window spans the whole virtual desktop. It highlights
-the window under the cursor and returns that window's HWND when clicked. Because the
-overlay sits on top, it absorbs the click so the underlying app never receives it.
+Each overlay is a faint, fullscreen, top-most window spanning the whole virtual
+desktop. The overlays are built as ``Toplevel`` widgets on a shared Tk root when
+one is provided (the tray app runs a single UI thread), and fall back to a
+temporary standalone root for the developer CLI. This avoids creating multiple
+``tk.Tk()`` interpreters across threads, which is unstable in Tkinter.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ import win32api
 import win32gui
 
 from .capture import get_frame_bounds, top_level_hwnd, window_at_point
+from .i18n import LANG_AUTO, translate
 
 _ACCENT = "#3b9dff"
 _BG = "#101216"
@@ -26,42 +29,72 @@ def _virtual_screen() -> tuple[int, int, int, int]:
     return vx, vy, vw, vh
 
 
-def _fade_in(root, target: float) -> None:
+def _fade_in(win, target: float) -> None:
     current = {"alpha": 0.02}
 
     def step():
         current["alpha"] = min(target, current["alpha"] + 0.035)
         try:
-            root.attributes("-alpha", current["alpha"])
+            win.attributes("-alpha", current["alpha"])
         except Exception:
             return
         if current["alpha"] < target:
-            root.after(16, step)
+            win.after(16, step)
 
     step()
 
 
-def pick_window(_auto_close_ms: int | None = None) -> int | None:
-    """Show the overlay and return the clicked window's HWND (None if cancelled).
+def _make_overlay(parent):
+    """Return (owner, window, standalone) for a fullscreen overlay.
 
-    ``_auto_close_ms`` is a test hook: when set, the overlay cancels itself after
-    that many milliseconds (used by the smoke test, no real interaction needed).
+    When ``parent`` is given the overlay is a ``Toplevel`` of that root and the
+    caller is expected to already be on the root's UI thread. When ``parent`` is
+    ``None`` a temporary hidden root is created (developer CLI use).
     """
     import tkinter as tk
 
+    standalone = parent is None
+    if standalone:
+        owner = tk.Tk()
+        owner.withdraw()
+    else:
+        owner = parent
+    window = tk.Toplevel(owner)
     vx, vy, vw, vh = _virtual_screen()
+    window.overrideredirect(True)
+    window.geometry(f"{vw}x{vh}+{vx}+{vy}")
+    window.attributes("-topmost", True)
+    window.attributes("-alpha", 0.02)
+    window.config(bg=_BG, cursor="crosshair")
+    return owner, window, standalone
 
-    root = tk.Tk()
-    root.overrideredirect(True)
-    root.geometry(f"{vw}x{vh}+{vx}+{vy}")
-    root.attributes("-topmost", True)
-    root.attributes("-alpha", 0.02)
-    root.config(bg=_BG, cursor="crosshair")
 
-    canvas = tk.Canvas(root, bg=_BG, highlightthickness=0)
+def _wait_overlay(owner, window, standalone) -> None:
+    try:
+        owner.wait_window(window)
+    finally:
+        if standalone:
+            try:
+                owner.destroy()
+            except Exception:
+                pass
+
+
+def pick_window(
+    parent=None,
+    language: str = LANG_AUTO,
+    _auto_close_ms: int | None = None,
+) -> int | None:
+    """Show the overlay and return the clicked window's HWND (None if cancelled)."""
+    import tkinter as tk
+
+    vx, vy, vw, vh = _virtual_screen()
+    owner, window, standalone = _make_overlay(parent)
+
+    canvas = tk.Canvas(window, bg=_BG, highlightthickness=0)
     canvas.pack(fill="both", expand=True)
 
-    overlay_hwnd = top_level_hwnd(root.winfo_id())
+    overlay_hwnd = top_level_hwnd(window.winfo_id())
     state = {"hwnd": None, "selected": None, "rect": None}
 
     def lerp_rect(source, target, amount: float = 0.28):
@@ -73,7 +106,7 @@ def pick_window(_auto_close_ms: int | None = None) -> int | None:
         try:
             x, y = win32api.GetCursorPos()
         except Exception:
-            root.after(33, refresh)
+            window.after(33, refresh)
             return
         hwnd = window_at_point(x, y, skip=overlay_hwnd)
         state["hwnd"] = hwnd
@@ -89,46 +122,50 @@ def pick_window(_auto_close_ms: int | None = None) -> int | None:
                                     outline="white", width=1, tag="hl")
             title = win32gui.GetWindowText(hwnd) or "(untitled)"
             label = f"  {title}   {r - l}x{b - t}  "
-            ty = ct - 26 if ct - 26 > (vy - vy) else cb + 4
+            ty = ct - 26 if ct - 26 > 0 else cb + 4
             canvas.create_rectangle(cl, ty, cl + 9 * len(label), ty + 24,
                                     fill=_ACCENT, outline="", tag="hl")
             canvas.create_text(cl + 6, ty + 12, text=label.strip(), fill="white",
                                anchor="w", font=("Segoe UI", 10, "bold"), tag="hl")
         else:
             state["rect"] = None
-        root.after(33, refresh)
+        window.after(33, refresh)
 
     def on_click(_event):
         state["selected"] = state["hwnd"]
-        root.destroy()
+        window.destroy()
 
     def on_cancel(_event=None):
         state["selected"] = None
-        root.destroy()
+        window.destroy()
 
     canvas.bind("<Button-1>", on_click)
     canvas.bind("<Button-3>", on_cancel)
-    root.bind("<Escape>", on_cancel)
+    window.bind("<Escape>", on_cancel)
 
-    # Center hint text.
     canvas.create_text(vw // 2, 40,
-                       text="Click a window to capture    ·    Esc / right-click to cancel",
+                       text=translate("picker.window_hint", language),
                        fill="white", font=("Segoe UI", 13, "bold"))
 
-    root.after(33, refresh)
-    root.focus_force()
+    window.after(33, refresh)
+    window.focus_force()
     try:
         ctypes.windll.user32.SetForegroundWindow(overlay_hwnd)
     except Exception:
         pass
     if _auto_close_ms is not None:
-        root.after(_auto_close_ms, on_cancel)
-    _fade_in(root, 0.24)
-    root.mainloop()
+        window.after(_auto_close_ms, on_cancel)
+    _fade_in(window, 0.24)
+    _wait_overlay(owner, window, standalone)
     return state["selected"]
 
 
-def pick_region(mode: str = "free", _auto_close_ms: int | None = None) -> tuple[int, int, int, int] | None:
+def pick_region(
+    mode: str = "free",
+    parent=None,
+    language: str = LANG_AUTO,
+    _auto_close_ms: int | None = None,
+) -> tuple[int, int, int, int] | None:
     """Show a drag-to-select overlay and return a physical screen rectangle."""
     import tkinter as tk
 
@@ -136,21 +173,16 @@ def pick_region(mode: str = "free", _auto_close_ms: int | None = None) -> tuple[
         raise ValueError(f"unsupported region picker mode: {mode}")
 
     vx, vy, vw, vh = _virtual_screen()
-    root = tk.Tk()
-    root.overrideredirect(True)
-    root.geometry(f"{vw}x{vh}+{vx}+{vy}")
-    root.attributes("-topmost", True)
-    root.attributes("-alpha", 0.02)
-    root.config(bg=_BG, cursor="crosshair")
+    owner, window, standalone = _make_overlay(parent)
 
-    canvas = tk.Canvas(root, bg=_BG, highlightthickness=0)
+    canvas = tk.Canvas(window, bg=_BG, highlightthickness=0)
     canvas.pack(fill="both", expand=True)
 
-    verb = "Drag a circle region" if mode == "circle" else "Drag a free screenshot region"
+    hint_key = "picker.circle_hint" if mode == "circle" else "picker.region_hint"
     canvas.create_text(
         vw // 2,
         40,
-        text=f"{verb}    ·    Esc / right-click to cancel",
+        text=translate(hint_key, language),
         fill="white",
         font=("Segoe UI", 13, "bold"),
         tag="hint",
@@ -213,32 +245,159 @@ def pick_region(mode: str = "free", _auto_close_ms: int | None = None) -> tuple[
         on_drag(event)
         rect = normalized_rect()
         if not rect:
-            root.destroy()
+            window.destroy()
             return
         l, t, r, b = rect
         if (r - l) < 4 or (b - t) < 4:
             state["selected"] = None
         else:
             state["selected"] = (l + vx, t + vy, r + vx, b + vy)
-        root.destroy()
+        window.destroy()
 
     def on_cancel(_event=None):
         state["selected"] = None
-        root.destroy()
+        window.destroy()
 
     canvas.bind("<Button-1>", on_press)
     canvas.bind("<B1-Motion>", on_drag)
     canvas.bind("<ButtonRelease-1>", on_release)
     canvas.bind("<Button-3>", on_cancel)
-    root.bind("<Escape>", on_cancel)
+    window.bind("<Escape>", on_cancel)
 
-    root.focus_force()
+    window.focus_force()
     try:
-        ctypes.windll.user32.SetForegroundWindow(top_level_hwnd(root.winfo_id()))
+        ctypes.windll.user32.SetForegroundWindow(top_level_hwnd(window.winfo_id()))
     except Exception:
         pass
     if _auto_close_ms is not None:
-        root.after(_auto_close_ms, on_cancel)
-    _fade_in(root, 0.26)
-    root.mainloop()
+        window.after(_auto_close_ms, on_cancel)
+    _fade_in(window, 0.26)
+    _wait_overlay(owner, window, standalone)
+    return state["selected"]
+
+
+def pick_freeform_region(
+    parent=None,
+    language: str = LANG_AUTO,
+    _auto_close_ms: int | None = None,
+) -> tuple[tuple[int, int, int, int], list[tuple[int, int]]] | None:
+    """Draw a freehand region and return its physical bbox plus local points."""
+    import tkinter as tk
+
+    vx, vy, vw, vh = _virtual_screen()
+    owner, window, standalone = _make_overlay(parent)
+
+    canvas = tk.Canvas(window, bg=_BG, highlightthickness=0)
+    canvas.pack(fill="both", expand=True)
+    canvas.create_text(
+        vw // 2,
+        40,
+        text=translate("picker.freeform_hint", language),
+        fill="white",
+        font=("Segoe UI", 13, "bold"),
+        tag="hint",
+    )
+
+    state = {"points": [], "selected": None}
+
+    def clamp_point(x: int, y: int) -> tuple[int, int]:
+        return max(0, min(vw, x)), max(0, min(vh, y))
+
+    def bounds(points: list[tuple[int, int]]) -> tuple[int, int, int, int]:
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        return min(xs), min(ys), max(xs), max(ys)
+
+    def redraw() -> None:
+        canvas.delete("sel")
+        points = state["points"]
+        if len(points) < 2:
+            return
+        flat = [coord for point in points for coord in point]
+        canvas.create_line(
+            *flat,
+            fill=_ACCENT,
+            width=4,
+            smooth=True,
+            capstyle="round",
+            joinstyle="round",
+            tag="sel",
+        )
+        if len(points) >= 3:
+            canvas.create_polygon(
+                *flat,
+                outline="white",
+                fill="",
+                width=1,
+                smooth=True,
+                tag="sel",
+            )
+            l, t, r, b = bounds(points)
+            label = f"{r - l}x{b - t}"
+            ty = t - 26 if t > 32 else b + 6
+            canvas.create_rectangle(
+                l,
+                ty,
+                l + 9 * len(label) + 12,
+                ty + 24,
+                fill=_ACCENT,
+                outline="",
+                tag="sel",
+            )
+            canvas.create_text(
+                l + 6,
+                ty + 12,
+                text=label,
+                fill="white",
+                anchor="w",
+                font=("Segoe UI", 10, "bold"),
+                tag="sel",
+            )
+
+    def on_press(event):
+        state["points"] = [clamp_point(event.x, event.y)]
+        redraw()
+
+    def on_drag(event):
+        point = clamp_point(event.x, event.y)
+        points = state["points"]
+        if points and abs(point[0] - points[-1][0]) < 2 and abs(point[1] - points[-1][1]) < 2:
+            return
+        points.append(point)
+        redraw()
+
+    def on_release(event):
+        on_drag(event)
+        points = state["points"]
+        if len(points) < 3:
+            state["selected"] = None
+            window.destroy()
+            return
+        l, t, r, b = bounds(points)
+        if (r - l) < 4 or (b - t) < 4:
+            state["selected"] = None
+        else:
+            local_points = [(x - l, y - t) for x, y in points]
+            state["selected"] = ((l + vx, t + vy, r + vx, b + vy), local_points)
+        window.destroy()
+
+    def on_cancel(_event=None):
+        state["selected"] = None
+        window.destroy()
+
+    canvas.bind("<Button-1>", on_press)
+    canvas.bind("<B1-Motion>", on_drag)
+    canvas.bind("<ButtonRelease-1>", on_release)
+    canvas.bind("<Button-3>", on_cancel)
+    window.bind("<Escape>", on_cancel)
+
+    window.focus_force()
+    try:
+        ctypes.windll.user32.SetForegroundWindow(top_level_hwnd(window.winfo_id()))
+    except Exception:
+        pass
+    if _auto_close_ms is not None:
+        window.after(_auto_close_ms, on_cancel)
+    _fade_in(window, 0.26)
+    _wait_overlay(owner, window, standalone)
     return state["selected"]

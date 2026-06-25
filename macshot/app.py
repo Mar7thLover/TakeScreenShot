@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import threading
 import time
 from dataclasses import dataclass, fields, replace
 from datetime import datetime
@@ -13,7 +14,14 @@ from PIL import Image, ImageDraw
 
 from .capture import bring_to_front, capture_full_screen, capture_region, capture_window
 from .clipboard import copy_image
-from .effect import ShotStyle, apply_circle_effect, apply_mac_effect, apply_region_effect
+from .effect import (
+    ShotStyle,
+    apply_circle_effect,
+    apply_freeform_effect,
+    apply_mac_effect,
+    apply_region_effect,
+)
+from .i18n import LANG_AUTO, translate
 from .settings import load_settings, save_settings
 
 WM_HOTKEY = 0x0312
@@ -25,6 +33,8 @@ WM_APP_SETTINGS = 0x8005
 WM_APP_CAPTURE_FULL = 0x8006
 WM_APP_CAPTURE_CIRCLE = 0x8007
 WM_APP_CAPTURE_FREE = 0x8008
+WM_APP_CAPTURE_REGION = 0x8009
+WM_APP_APPLY_SETTINGS = 0x800A
 HOTKEY_ID = 1
 ERROR_ALREADY_EXISTS = 183
 ERROR_HOTKEY_ALREADY_REGISTERED = 1409
@@ -48,6 +58,7 @@ class AppConfig:
     no_raise: bool = False
     settle: float = 0.35
     hotkey: str = "ctrl+shift+s"
+    language: str = LANG_AUTO
     radius: int | None = None
     padding: int | None = None
     no_shadow: bool = False
@@ -96,6 +107,7 @@ def save_config(config: AppConfig) -> None:
         "no_raise": config.no_raise,
         "settle": config.settle,
         "hotkey": config.hotkey,
+        "language": config.language,
         "radius": config.radius,
         "padding": config.padding,
         "no_shadow": config.no_shadow,
@@ -134,6 +146,7 @@ def config_from_args(args, base: AppConfig | None = None) -> AppConfig:
         no_raise=args.no_raise if args.no_raise is not None else config.no_raise,
         settle=args.settle if args.settle is not None else config.settle,
         hotkey=args.combo or config.hotkey,
+        language=config.language,
         radius=args.radius if args.radius is not None else config.radius,
         padding=args.padding if args.padding is not None else config.padding,
         no_shadow=args.no_shadow if args.no_shadow is not None else config.no_shadow,
@@ -185,7 +198,7 @@ def process_hwnd(hwnd: int, config: AppConfig) -> Path | None:
 def capture_selected_window(config: AppConfig) -> Path | None:
     from .picker import pick_window
 
-    hwnd = pick_window()
+    hwnd = pick_window(language=config.language)
     if not hwnd:
         return None
     return process_hwnd(hwnd, config)
@@ -196,26 +209,60 @@ def capture_full_screen_once(config: AppConfig) -> Path:
     return save_and_finish(img.convert("RGBA"), config, "full-screen")
 
 
-def capture_free_region_once(config: AppConfig) -> Path | None:
+def capture_region_once(config: AppConfig) -> Path | None:
     from .picker import pick_region
 
-    region = pick_region("free")
+    region = pick_region("free", language=config.language)
     if not region:
         return None
     img, scale = capture_region(region)
     result = apply_region_effect(img, style_from_config(config), scale=scale)
+    return save_and_finish(result, config, "region")
+
+
+def capture_free_region_once(config: AppConfig) -> Path | None:
+    from .picker import pick_freeform_region
+
+    selection = pick_freeform_region(language=config.language)
+    if not selection:
+        return None
+    region, points = selection
+    img, scale = capture_region(region)
+    result = apply_freeform_effect(img, points, style_from_config(config), scale=scale)
     return save_and_finish(result, config, "free-region")
 
 
 def capture_circle_region_once(config: AppConfig) -> Path | None:
     from .picker import pick_region
 
-    region = pick_region("circle")
+    region = pick_region("circle", language=config.language)
     if not region:
         return None
     img, scale = capture_region(region)
     result = apply_circle_effect(img, style_from_config(config), scale=scale)
     return save_and_finish(result, config, "circle-region")
+
+
+def process_region(region: tuple[int, int, int, int], config: AppConfig) -> Path:
+    """Grab + style an already-selected rectangular region."""
+    img, scale = capture_region(region)
+    result = apply_region_effect(img, style_from_config(config), scale=scale)
+    return save_and_finish(result, config, "region")
+
+
+def process_circle(region: tuple[int, int, int, int], config: AppConfig) -> Path:
+    """Grab + style an already-selected circular region."""
+    img, scale = capture_region(region)
+    result = apply_circle_effect(img, style_from_config(config), scale=scale)
+    return save_and_finish(result, config, "circle-region")
+
+
+def process_freeform(selection, config: AppConfig) -> Path:
+    """Grab + style an already-drawn freehand selection."""
+    region, points = selection
+    img, scale = capture_region(region)
+    result = apply_freeform_effect(img, points, style_from_config(config), scale=scale)
+    return save_and_finish(result, config, "free-region")
 
 
 def open_output_dir(config: AppConfig) -> None:
@@ -236,52 +283,6 @@ def _make_icon_image() -> Image.Image:
 def _show_message(title: str, message: str, error: bool = False) -> None:
     flags = 0x10 if error else 0x40
     ctypes.windll.user32.MessageBoxW(None, message, title, flags)
-
-
-def _notify(icon, message: str, title: str = "Macshot") -> None:
-    try:
-        icon.notify(message, title)
-    except Exception:
-        pass
-
-
-def _show_startup_feedback(config: AppConfig, hotkey_registered: bool) -> None:
-    try:
-        import tkinter as tk
-    except Exception:
-        _show_message("Macshot", "Macshot is running.")
-        return
-
-    root = tk.Tk()
-    root.overrideredirect(True)
-    root.attributes("-topmost", True)
-    root.configure(bg="#202124")
-
-    hotkey_text = f"Press {config.hotkey} to capture a window."
-    if not hotkey_registered:
-        hotkey_text = "Use the tray menu to capture windows."
-    message = f"Macshot is running\n{hotkey_text}"
-
-    label = tk.Label(
-        root,
-        text=message,
-        bg="#202124",
-        fg="white",
-        font=("Segoe UI", 11),
-        padx=18,
-        pady=14,
-        justify="left",
-    )
-    label.pack()
-
-    root.update_idletasks()
-    width = root.winfo_width()
-    height = root.winfo_height()
-    screen_w = root.winfo_screenwidth()
-    screen_h = root.winfo_screenheight()
-    root.geometry(f"{width}x{height}+{screen_w - width - 24}+{screen_h - height - 64}")
-    root.after(2600, root.destroy)
-    root.mainloop()
 
 
 def _parse_hotkey(combo: str) -> tuple[int, int]:
@@ -307,13 +308,17 @@ def _parse_hotkey(combo: str) -> tuple[int, int]:
 
 class MacshotTrayApp:
     def __init__(self, config: AppConfig | None = None):
+        from .ui import UiController
+
         self.config = config or load_config()
         self._thread_id = 0
         self._icon = None
-        self._capturing = False
+        self._capture_lock = threading.Lock()
         self._hotkey_registered = False
         self._mutex_handle = None
         self._last_path: Path | None = None
+        self._pending_config: AppConfig | None = None
+        self._ui = UiController()
 
     def run(self) -> int:
         self._thread_id = ctypes.windll.kernel32.GetCurrentThreadId()
@@ -321,16 +326,13 @@ class MacshotTrayApp:
             if not self._acquire_single_instance():
                 _show_message(
                     "Macshot",
-                    "Macshot is already running. Use the existing tray icon.",
+                    translate("app.already_running", self.config.language),
                 )
                 return 0
+            self._ui.start()
             self._start_tray()
             self._hotkey_registered = self._register_hotkey()
-            _show_startup_feedback(self.config, self._hotkey_registered)
-            # Open the Home window automatically on launch. Posting the message
-            # lets the regular message loop own the Tk window instead of blocking
-            # startup here.
-            self._post(WM_APP_HOME)
+            self.open_home()
             self._message_loop()
         except Exception as exc:
             _show_message("Macshot", str(exc), error=True)
@@ -338,129 +340,177 @@ class MacshotTrayApp:
         finally:
             self._unregister_hotkey()
             self._stop_tray()
+            self._ui.stop()
             self._release_single_instance()
         return 0
 
-    def capture_once(self) -> None:
-        self.capture_window_once()
+    def _run_daemon(self, target, name: str) -> None:
+        thread = threading.Thread(target=target, name=name, daemon=True)
+        thread.start()
 
-    def capture_window_once(self) -> None:
-        if self._capturing:
-            return
-        self._capturing = True
-        try:
-            path = capture_selected_window(self.config)
-            self._capture_done(path)
-        except Exception as exc:
-            _show_message("Macshot capture failed", str(exc), error=True)
-        finally:
-            self._capturing = False
+    # -- Home / Settings ------------------------------------------------------
 
-    def capture_full_screen_once(self) -> None:
-        self._run_capture(lambda: capture_full_screen_once(self.config))
+    def _home_callbacks(self):
+        from .ui import HomeCallbacks
 
-    def capture_circle_once(self) -> None:
-        self._run_capture(lambda: capture_circle_region_once(self.config))
-
-    def capture_free_once(self) -> None:
-        self._run_capture(lambda: capture_free_region_once(self.config))
-
-    def open_home(self) -> None:
-        from .ui import show_home
-
-        show_home(
-            self.config,
-            on_capture_window=self.capture_window_once,
-            on_capture_full=self.capture_full_screen_once,
-            on_capture_circle=self.capture_circle_once,
-            on_capture_free=self.capture_free_once,
-            on_settings=self.open_settings,
-            on_open_folder=lambda: open_output_dir(self.config),
-            last_path=self._last_path,
+        return HomeCallbacks(
+            on_capture_window=lambda: self._post(WM_APP_CAPTURE),
+            on_capture_full=lambda: self._post(WM_APP_CAPTURE_FULL),
+            on_capture_region=lambda: self._post(WM_APP_CAPTURE_REGION),
+            on_capture_circle=lambda: self._post(WM_APP_CAPTURE_CIRCLE),
+            on_capture_free=lambda: self._post(WM_APP_CAPTURE_FREE),
+            on_settings=lambda: self._post(WM_APP_SETTINGS),
+            on_open_folder=lambda: self._post(WM_APP_OPEN_DIR),
         )
 
-    def open_settings(self) -> None:
-        from .ui import show_settings
+    def open_home(self) -> None:
+        self._ui.show_home(self.config, self._home_callbacks(), self._last_path)
 
-        updated = show_settings(self.config, default_out_dir())
-        if updated is None:
+    def open_settings(self) -> None:
+        self._ui.show_settings(
+            self.config, default_out_dir(), self._on_settings_saved
+        )
+
+    def _on_settings_saved(self, new_config: AppConfig) -> None:
+        # Called on the UI thread; apply on the message-loop thread so the hotkey
+        # is (re)registered on the thread that owns the Win32 message queue.
+        self._pending_config = new_config
+        self._post(WM_APP_APPLY_SETTINGS)
+
+    def _apply_settings(self) -> None:
+        new_config = self._pending_config
+        self._pending_config = None
+        if new_config is None:
             return
         old_hotkey = self.config.hotkey
-        self.config = updated
+        old_language = self.config.language
+        self.config = new_config
         save_config(self.config)
         if self._icon:
-            self._icon.title = f"Macshot - {self.config.hotkey} to capture"
+            self._icon.title = translate(
+                "app.tray_title", self.config.language, hotkey=self.config.hotkey
+            )
+        if old_language != self.config.language:
+            self._stop_tray()
+            self._start_tray()
         if old_hotkey != self.config.hotkey:
             self._unregister_hotkey()
             self._hotkey_registered = self._register_hotkey()
+        self._ui.rebuild_home_if_open(
+            self.config, self._home_callbacks(), self._last_path
+        )
 
-    def _run_capture(self, capture_func) -> None:
-        if self._capturing:
+    # -- Capture --------------------------------------------------------------
+
+    def _spawn_capture(self, do_capture) -> None:
+        if not self._capture_lock.acquire(blocking=False):
             return
-        self._capturing = True
-        try:
-            path = capture_func()
-            self._capture_done(path)
-        except Exception as exc:
-            _show_message("Macshot capture failed", str(exc), error=True)
-        finally:
-            self._capturing = False
 
-    def _capture_done(self, path: Path | None) -> None:
+        def worker() -> None:
+            home_was_visible = False
+            try:
+                home_was_visible = self._ui.hide_home_for_capture()
+                if home_was_visible:
+                    time.sleep(0.12)  # let the window vanish before grabbing
+                do_capture()
+            except Exception as exc:  # noqa: BLE001
+                _show_message(
+                    translate("app.capture_failed", self.config.language),
+                    str(exc),
+                    error=True,
+                )
+            finally:
+                if home_was_visible:
+                    self._ui.reshow_home(self._last_path)
+                self._capture_lock.release()
+
+        self._run_daemon(worker, "MacshotCapture")
+
+    def _finish(self, path: Path | None) -> None:
         if not path:
             return
         self._last_path = path
-        if self._icon:
-            _notify(self._icon, f"Saved to {path}")
+        config = self.config
+        self._ui.show_notification(
+            config, path, lambda: open_output_dir(config)
+        )
+
+    def _capture_window(self) -> None:
+        hwnd = self._ui.pick_window(self.config.language)
+        if hwnd:
+            self._finish(process_hwnd(hwnd, self.config))
+
+    def _capture_full(self) -> None:
+        self._finish(capture_full_screen_once(self.config))
+
+    def _capture_region(self) -> None:
+        region = self._ui.pick_region("free", self.config.language)
+        if region:
+            self._finish(process_region(region, self.config))
+
+    def _capture_circle(self) -> None:
+        region = self._ui.pick_region("circle", self.config.language)
+        if region:
+            self._finish(process_circle(region, self.config))
+
+    def _capture_free(self) -> None:
+        selection = self._ui.pick_freeform(self.config.language)
+        if selection:
+            self._finish(process_freeform(selection, self.config))
 
     def _start_tray(self) -> None:
         try:
             import pystray
         except ImportError as exc:
             raise RuntimeError(
-                "The 'pystray' package is required for the Macshot tray app."
+                translate("app.tray_required", self.config.language)
             ) from exc
 
         menu = pystray.Menu(
-            pystray.MenuItem("Home", lambda _icon, _item: self._post(WM_APP_HOME)),
             pystray.MenuItem(
-                "Capture Window",
+                translate("tray.home", self.config.language),
+                lambda _icon, _item: self._post(WM_APP_HOME),
+            ),
+            pystray.MenuItem(
+                translate("tray.capture_window", self.config.language),
                 lambda _icon, _item: self._post(WM_APP_CAPTURE),
             ),
             pystray.MenuItem(
-                "Capture Full Screen",
+                translate("tray.capture_full", self.config.language),
                 lambda _icon, _item: self._post(WM_APP_CAPTURE_FULL),
             ),
             pystray.MenuItem(
-                "Capture Circle",
+                translate("tray.capture_region", self.config.language),
+                lambda _icon, _item: self._post(WM_APP_CAPTURE_REGION),
+            ),
+            pystray.MenuItem(
+                translate("tray.capture_circle", self.config.language),
                 lambda _icon, _item: self._post(WM_APP_CAPTURE_CIRCLE),
             ),
             pystray.MenuItem(
-                "Free Screenshot",
+                translate("tray.capture_freeform", self.config.language),
                 lambda _icon, _item: self._post(WM_APP_CAPTURE_FREE),
             ),
             pystray.MenuItem(
-                "Settings",
+                translate("tray.settings", self.config.language),
                 lambda _icon, _item: self._post(WM_APP_SETTINGS),
             ),
             pystray.MenuItem(
-                "Open Output Folder",
+                translate("tray.open_folder", self.config.language),
                 lambda _icon, _item: self._post(WM_APP_OPEN_DIR),
             ),
-            pystray.MenuItem("Exit", lambda _icon, _item: self._post(WM_APP_EXIT)),
+            pystray.MenuItem(
+                translate("tray.exit", self.config.language),
+                lambda _icon, _item: self._post(WM_APP_EXIT),
+            ),
         )
         self._icon = pystray.Icon(
             "Macshot",
             _make_icon_image(),
-            f"Macshot - {self.config.hotkey} to capture",
+            translate("app.tray_title", self.config.language, hotkey=self.config.hotkey),
             menu,
         )
         self._icon.run_detached()
-        _notify(
-            self._icon,
-            f"Press {self.config.hotkey} to capture a window.",
-            "Macshot is running",
-        )
 
     def _stop_tray(self) -> None:
         if self._icon:
@@ -489,23 +539,31 @@ class MacshotTrayApp:
             modifiers, key = _parse_hotkey(self.config.hotkey)
         except ValueError as exc:
             _show_message(
-                "Macshot hotkey unavailable",
-                f"Could not register hotkey: {self.config.hotkey}\n\n{exc}",
+                translate("app.hotkey_unavailable", self.config.language),
+                translate(
+                    "app.hotkey_register_error",
+                    self.config.language,
+                    hotkey=self.config.hotkey,
+                    error=exc,
+                ),
             )
             return False
         ctypes.windll.kernel32.SetLastError(0)
         ok = ctypes.windll.user32.RegisterHotKey(None, HOTKEY_ID, modifiers, key)
         if not ok:
             error_code = ctypes.windll.kernel32.GetLastError()
-            reason = "The hotkey is already registered by another app."
+            reason = translate("app.hotkey_registered_elsewhere", self.config.language)
             if error_code and error_code != ERROR_HOTKEY_ALREADY_REGISTERED:
-                reason = f"Windows error {error_code}."
+                reason = translate(
+                    "app.hotkey_windows_error",
+                    self.config.language,
+                    code=error_code,
+                )
             _show_message(
-                "Macshot hotkey unavailable",
+                translate("app.hotkey_unavailable", self.config.language),
                 (
-                    f"Could not register hotkey: {self.config.hotkey}\n\n"
-                    f"{reason}\n\n"
-                    "Macshot will keep running. Use the tray menu to capture windows."
+                    f"{translate('app.hotkey_register_error', self.config.language, hotkey=self.config.hotkey, error=reason)}\n\n"
+                    f"{translate('app.hotkey_tray_fallback', self.config.language)}"
                 ),
             )
             return False
@@ -526,15 +584,17 @@ class MacshotTrayApp:
             if result == -1:
                 raise RuntimeError("Windows message loop failed")
             if msg.message == WM_HOTKEY and msg.wParam == HOTKEY_ID:
-                self.capture_window_once()
+                self._spawn_capture(self._capture_window)
             elif msg.message == WM_APP_CAPTURE:
-                self.capture_window_once()
+                self._spawn_capture(self._capture_window)
             elif msg.message == WM_APP_CAPTURE_FULL:
-                self.capture_full_screen_once()
+                self._spawn_capture(self._capture_full)
+            elif msg.message == WM_APP_CAPTURE_REGION:
+                self._spawn_capture(self._capture_region)
             elif msg.message == WM_APP_CAPTURE_CIRCLE:
-                self.capture_circle_once()
+                self._spawn_capture(self._capture_circle)
             elif msg.message == WM_APP_CAPTURE_FREE:
-                self.capture_free_once()
+                self._spawn_capture(self._capture_free)
             elif msg.message == WM_APP_HOME:
                 try:
                     self.open_home()
@@ -543,6 +603,11 @@ class MacshotTrayApp:
             elif msg.message == WM_APP_SETTINGS:
                 try:
                     self.open_settings()
+                except Exception as exc:
+                    _show_message("Macshot", str(exc), error=True)
+            elif msg.message == WM_APP_APPLY_SETTINGS:
+                try:
+                    self._apply_settings()
                 except Exception as exc:
                     _show_message("Macshot", str(exc), error=True)
             elif msg.message == WM_APP_OPEN_DIR:
